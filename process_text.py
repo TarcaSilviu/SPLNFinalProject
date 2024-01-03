@@ -1,6 +1,6 @@
 import os
 import json
-import string, time
+import string
 from textblob import TextBlob
 import nltk
 from nltk.corpus import stopwords
@@ -49,8 +49,6 @@ def process(file):
         it['text'] = do_nltk(remove_punct(it['text'].lower().replace("\\n", " ").replace("'s", "")))
         if 'link' in it:
             del it['link']
-        if 'id' in it:
-            del it['id']
         result_arr.append(it)
     with open(file_name, 'w', encoding='utf-8') as fout:
         json.dump(result_arr, fout)
