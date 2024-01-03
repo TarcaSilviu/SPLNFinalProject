@@ -36,8 +36,6 @@ def process(file):
     if os.path.exists(file_name):
         with open(file_name, 'r', encoding='utf-8') as fin:
             loaded_obj = json.load(fin)
-            for it in loaded_obj:
-                print(it)
         return
     json_file = os.path.join(script_dir, 'data\\{}.json'.format(file))
     if not os.path.exists(json_file):
@@ -51,9 +49,10 @@ def process(file):
         it['text'] = do_nltk(remove_punct(it['text'].lower().replace("\\n", " ").replace("'s", "")))
         if 'link' in it:
             del it['link']
-        print(it)
+        if 'id' in it:
+            del it['id']
         result_arr.append(it)
     with open(file_name, 'w', encoding='utf-8') as fout:
-        loaded_obj = json.dump(result_arr, fout)
+        json.dump(result_arr, fout)
 
 
