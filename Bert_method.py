@@ -1,40 +1,15 @@
 import torch
 import json
+import os
 from transformers import BertTokenizer, BertForSequenceClassification, AdamW
 from torch.nn.functional import sigmoid
 from torch.utils.data import DataLoader
-from sklearn.model_selection import train_test_split
-
-
+import tensorflow as tf
+import numpy as np
 def load_bert_model(model_name, num_labels):
     model = BertForSequenceClassification.from_pretrained(model_name, num_labels=num_labels)
     tokenizer = BertTokenizer.from_pretrained(model_name)
     return model, tokenizer
-
-
-def preprocess_text(text, tokenizer, max_length=128):
-    inputs = tokenizer(text, return_tensors="pt", max_length=max_length, truncation=True)
-    return inputs
-
-
-def classify_labels(text, model, tokenizer):
-    inputs = preprocess_text(text, tokenizer)
-    outputs = model(**inputs)
-    probabilities = sigmoid(outputs.logits)
-    return probabilities
-
-
-def calculate_precision(predictions, labels):
-    threshold = 0.5
-    binary_predictions = (predictions > threshold).float()
-
-    TP = (binary_predictions * labels).sum(dim=0)
-    FP = (binary_predictions * (1 - labels)).sum(dim=0)
-
-    precision = TP / (TP + FP + 1e-10)  # Adding a small epsilon to avoid division by zero
-
-    return precision
-
 
 label_mapping = {
     'Loaded Language': 0,
@@ -47,15 +22,16 @@ label_mapping = {
     'Name calling/Labeling': 7,
     'Appeal to authority': 8,
     'Repetition': 9,
-    'Exaggeration or minimization': 10,
+    'Exaggeration/Minimisation': 10,
     'Doubt': 11,
     'Appeal to fear/prejudice': 12,
     'Flag-waving': 13,
     'Reductio ad Hitlerum': 14,
-    'Red herring': 15,
+    'Presenting Irrelevant Data (Red Herring)': 15,
     'Bandwagon': 16,
-    'Obfuscation, intentional vagueness, confusion': 17,
-    'Straw man': 18,
+    'Obfuscation, Intentional vagueness, Confusion': 17,
+    "Misrepresentation of Someone's Position (Straw Man)": 18,
+    'Slogans': 19,
 }
 
 
@@ -85,6 +61,7 @@ class CustomDataset:
                 label_tensor[label_index] = 1
 
         return {
+            'ids': self.data[idx]['id'],
             'input_ids': inputs['input_ids'].squeeze(),
             'attention_mask': inputs['attention_mask'].squeeze(),
             'labels': label_tensor
@@ -93,7 +70,7 @@ class CustomDataset:
 
 def test():
     model_name = "bert-base-cased"
-    num_labels = 19
+    num_labels = 20
     model, tokenizer = load_bert_model(model_name, num_labels)
     custom_dataset = CustomDataset('data/train_filtered.json', tokenizer, 128)
     val_dataset = CustomDataset('data/validation_filtered.json', tokenizer, 128)
@@ -103,9 +80,8 @@ def test():
     val_dataloader = DataLoader(list(val_dataset), batch_size=batch_size, shuffle=False)
 
     optimizer = AdamW(model.parameters(), lr=5e-5)
-    epochs = 2
+    epochs = 5
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
     model.to(device)
 
     for epoch in range(epochs):
@@ -122,32 +98,45 @@ def test():
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-            print(total_loss)
 
         average_loss = total_loss / len(train_dataloader)
         print(f"Epoch {epoch + 1}, Average Loss: {average_loss}")
 
-        model.eval()
-        val_loss = 0.0
-        all_predictions = []
-        all_labels = []
+    model.eval()
+    val_loss = 0.0
+    final_precision = 0
+    iteration =0
+    result_arr =[]
+    with torch.no_grad():
+        for batch in val_dataloader:
+            iteration = iteration+1
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
+            outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+            logits = outputs.logits
+            probs = tf.nn.softmax(logits.cpu(), axis=-1)
+            batch_precision = 0
 
-        with torch.no_grad():
-            for batch in val_dataloader:
-                input_ids = batch['input_ids'].to(device)
-                attention_mask = batch['attention_mask'].to(device)
-                labels = batch['labels'].to(device)
+            for i in range(len(probs)):
+                result = {}
 
-                outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
-                logits = outputs.logits
-                probabilities = sigmoid(logits)
-                all_predictions.append(probabilities.cpu())
-                all_labels.append(labels.cpu())
-                val_loss += outputs.loss.item()
-        all_predictions = torch.cat(all_predictions, dim=0)
-        all_labels = torch.cat(all_labels, dim=0)
+                max_position = np.argmax(probs[i])
+                result['id'] = batch['ids'][i]
+                result['labels'] = []
+                if labels[i][max_position] == 1:
+                    label_key = next(key for key, value in label_mapping.items() if value == max_position)
+                    result['labels'] = [label_key]
+                    batch_precision = batch_precision+1
+                result_arr.append(result)
+            final_precision = final_precision + (batch_precision/32)
+            val_loss += outputs.loss.item()
 
-        precision = calculate_precision(all_predictions, all_labels)
-        average_val_loss = val_loss / len(val_dataloader)
-        print(f"PRECISION IS {precision}")
-        print(f"Epoch {epoch + 1}, Average Validation Loss: {average_val_loss}")
+    script_dir = os.path.dirname(__file__)
+    json_file = os.path.join(script_dir, 'data\\bert_validation.json.txt')
+    with open(json_file, 'w', encoding='utf-8') as fout:
+        json.dump(result_arr, fout)
+    print('FINAL PRECISION')
+    print(final_precision/iteration)
+    average_val_loss = val_loss / len(val_dataloader)
+    print(f"Epoch {epoch + 1}, Average Validation Loss: {average_val_loss}")
